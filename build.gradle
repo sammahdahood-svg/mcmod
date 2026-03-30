@@ -1,5 +1,5 @@
 plugins {
-	id 'fabric-loom' version '1.7-SNAPSHOT'
+	id 'fabric-loom' version '1.7.4'
 	id 'maven-publish'
 }
 
@@ -10,37 +10,15 @@ base {
 	archivesName = project.archives_base_name
 }
 
-repositories {
-	maven { url "https://maven.terraformersmc.com/" }
-}
-
-loom {
-	splitEnvironmentSourceSets()
-
-	mods {
-		"macrohub" {
-			sourceSet sourceSets.main
-			sourceSet sourceSets.client
-		}
-	}
-}
-
-fabricApi {
-	configureDataGeneration()
-}
-
 dependencies {
 	minecraft "com.mojang:minecraft:${project.minecraft_version}"
 	mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
 	modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
-
-	// Gson is bundled with Minecraft
 }
 
 processResources {
 	inputs.property "version", project.version
-
 	filesMatching("fabric.mod.json") {
 		expand "version": project.version
 	}
@@ -57,7 +35,6 @@ java {
 }
 
 jar {
-	inputs.property "archivesName", project.archivesName
 	from("LICENSE") {
 		rename { "${it}_${project.archivesName}" }
 	}
