@@ -1,26 +1,13 @@
 package com.macrohub.macro;
 
-import com.macrohub.config.MacroConfig;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.option.GameOptions;
-import org.lwjgl.glfw.GLFW;
+import net.minecraft.util.Hand;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * Executes macros asynchronously on a dedicated thread.
- *
- * Replicates the AHK ExecuteMacro() function:
- *   - Iterates key list
- *   - Sends keys / mouse inputs
- *   - Sleeps between actions (data.delay or explicit Sleep tokens)
- *
- * Mouse inputs are sent via GLFW callbacks and Minecraft's internal
- * mouse handler so they register as real in-game actions.
- */
 public class MacroExecutor {
 
     private static final ExecutorService EXECUTOR =
@@ -33,10 +20,9 @@ public class MacroExecutor {
     private static final AtomicBoolean running = new AtomicBoolean(false);
     private static Future<?> currentTask = null;
 
-    /** Execute a macro — mirrors AHK's ExecuteMacro(name). */
     public static void execute(MacroDefinition macro) {
         if (!macro.isEnabled()) return;
-        if (running.get()) return; // don't overlap
+        if (running.get()) return;
 
         currentTask = EXECUTOR.submit(() -> {
             running.set(true);
@@ -51,43 +37,65 @@ public class MacroExecutor {
 
                         case SLEEP -> {
                             Thread.sleep(action.getValue());
-                            continue; // skip normal inter-action delay
+                            continue;
                         }
 
-                        // ── Mouse actions ──────────────────────────────
-                        case MOUSE_LEFT -> {
-                            simulateMouseButton(mc, GLFW.GLFW_MOUSE_BUTTON_LEFT, true);
-                            Thread.sleep(20);
-                            simulateMouseButton(mc, GLFW.GLFW_MOUSE_BUTTON_LEFT, false);
+                        case MOUSE_LEFT, MOUSE_LEFT_DOWN, MOUSE_LEFT_UP -> {
+                            mc.execute(() -> {
+                                if (mc.crosshairTarget != null && mc.player != null) {
+                                    mc.interactionManager.attackBlock(
+                                        mc.player.getBlockPos(), net.minecraft.util.math.Direction.UP);
+                                }
+                            });
                         }
-
-                        case MOUSE_LEFT_DOWN ->
-                            simulateMouseButton(mc, GLFW.GLFW_MOUSE_BUTTON_LEFT, true);
-
-                        case MOUSE_LEFT_UP ->
-                            simulateMouseButton(mc, GLFW.GLFW_MOUSE_BUTTON_LEFT, false);
 
                         case MOUSE_RIGHT -> {
-                            simulateMouseButton(mc, GLFW.GLFW_MOUSE_BUTTON_RIGHT, true);
-                            Thread.sleep(20);
-                            simulateMouseButton(mc, GLFW.GLFW_MOUSE_BUTTON_RIGHT, false);
+                            mc.execute(() -> {
+                                if (mc.player != null && mc.interactionManager != null) {
+                                    mc.interactionManager.interactItem(mc.player, Hand.MAIN_HAND);
+                                }
+                            });
                         }
 
-                        // XButton1/2 — map to hotbar slot or sprint as in AHK context
-                        case MOUSE_BUTTON4 -> simulateHotbarKey(mc, 0); // slot 1
-                        case MOUSE_BUTTON5 -> simulateHotbarKey(mc, 1); // slot 2
+                        case MOUSE_BUTTON4 -> {
+                            mc.execute(() -> {
+                                if (mc.player != null)
+                                    mc.player.getInventory().selectedSlot = 0;
+                            });
+                        }
 
-                        // ── Keyboard actions ───────────────────────────
-                        case SHIFT_DOWN  -> setShiftHeld(mc, true);
-                        case SHIFT_UP    -> setShiftHeld(mc, false);
+                        case MOUSE_BUTTON5 -> {
+                            mc.execute(() -> {
+                                if (mc.player != null)
+                                    mc.player.getInventory().selectedSlot = 1;
+                            });
+                        }
+
+                        case SHIFT_DOWN -> {
+                            mc.execute(() -> {
+                                if (mc.player != null) mc.player.setSneaking(true);
+                            });
+                        }
+
+                        case SHIFT_UP -> {
+                            mc.execute(() -> {
+                                if (mc.player != null) mc.player.setSneaking(false);
+                            });
+                        }
 
                         case KEY_PRESS -> {
                             int ch = action.getValue();
-                            // Map character to a Minecraft option and activate it
-                            pressCharKey(mc, (char) ch);
+                            mc.execute(() -> {
+                                if (mc.player == null) return;
+                                if (ch >= '1' && ch <= '9') {
+                                    mc.player.getInventory().selectedSlot = ch - '1';
+                                } else if (ch == 'q' || ch == 'Q') {
+                                    mc.player.dropSelectedItem(false);
+                                }
+                            });
                         }
 
-                        default -> {} // unknown action, skip
+                        default -> {}
                     }
 
                     Thread.sleep(macro.getDelay());
@@ -96,76 +104,20 @@ public class MacroExecutor {
                 Thread.currentThread().interrupt();
             } finally {
                 running.set(false);
-                // Release any held keys on finish
                 MinecraftClient mc = MinecraftClient.getInstance();
-                if (mc != null) releaseAll(mc);
+                if (mc != null) {
+                    mc.execute(() -> {
+                        if (mc.player != null) mc.player.setSneaking(false);
+                    });
+                }
             }
         });
     }
 
-    /** Cancel a running macro immediately. */
     public static void cancel() {
         if (currentTask != null) currentTask.cancel(true);
         running.set(false);
     }
 
     public static boolean isRunning() { return running.get(); }
-
-    // ── Private helpers ──────────────────────────────────────────────────
-
-    private static void simulateMouseButton(MinecraftClient mc, int button, boolean down) {
-        long window = mc.getWindow().getHandle();
-        int action = down ? GLFW.GLFW_PRESS : GLFW.GLFW_RELEASE;
-        mc.execute(() ->
-            GLFW.glfwSetMouseButtonCallback(window, null)); // passthrough
-        mc.getMouse().onMouseButton(window, button, action, 0);
-    }
-
-    /**
-     * Simulate pressing a hotbar digit key (1-9).
-     * In the AHK script, key "3" selects hotbar slot 3.
-     */
-    private static void pressCharKey(MinecraftClient mc, char ch) {
-        GameOptions opts = mc.options;
-        if (ch >= '1' && ch <= '9') {
-            int slot = ch - '1';
-            mc.execute(() -> {
-                if (mc.player != null)
-                    mc.player.getInventory().selectedSlot = slot;
-            });
-        } else if (ch == 'q' || ch == 'Q') {
-            // 'q' = drop item (AttribSwap1 in AHK uses {q})
-            mc.execute(() -> {
-                if (mc.player != null && mc.gameRenderer != null)
-                    mc.player.dropSelectedItem(false);
-            });
-        }
-        // Additional keys can be mapped here
-    }
-
-    private static void simulateHotbarKey(MinecraftClient mc, int slot) {
-        mc.execute(() -> {
-            if (mc.player != null)
-                mc.player.getInventory().selectedSlot = slot;
-        });
-    }
-
-    private static boolean shiftHeld = false;
-
-    private static void setShiftHeld(MinecraftClient mc, boolean held) {
-        shiftHeld = held;
-        mc.execute(() -> {
-            if (mc.player != null) {
-                mc.player.setSneaking(held);
-            }
-        });
-    }
-
-    private static void releaseAll(MinecraftClient mc) {
-        if (shiftHeld) setShiftHeld(mc, false);
-        mc.getMouse().onMouseButton(
-                mc.getWindow().getHandle(),
-                GLFW.GLFW_MOUSE_BUTTON_LEFT,
-                GLFW.GLFW_RELEASE, 0);
-    }
 }
